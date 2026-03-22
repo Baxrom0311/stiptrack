@@ -1,0 +1,154 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: stiptrack-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-stipendiya_db}
+      POSTGRES_USER: ${POSTGRES_USER:-stipuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-stippass}
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - stiptrack_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: stiptrack-redis
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - stiptrack_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    container_name: stiptrack-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    networks:
+      - stiptrack_net
+
+  backend:
+    build:
+      context: ./backend
+    container_name: stiptrack-backend
+    env_file:
+      - ./backend/.env
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stipuser}:${POSTGRES_PASSWORD:-stippass}@db:5432/${POSTGRES_DB:-stipendiya_db}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/3
+    volumes:
+      - ./backend:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    networks:
+      - stiptrack_net
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  mcp-server:
+    build:
+      context: ./backend
+    container_name: stiptrack-mcp
+    env_file:
+      - ./backend/.env
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stipuser}:${POSTGRES_PASSWORD:-stippass}@db:5432/${POSTGRES_DB:-stipendiya_db}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/3
+    volumes:
+      - ./backend:/app
+    command: python mcp/server.py
+    ports:
+      - "${MCP_PORT:-8001}:8001"
+    networks:
+      - stiptrack_net
+    depends_on:
+      - backend
+
+  celery:
+    build:
+      context: ./backend
+    container_name: stiptrack-celery
+    env_file:
+      - ./backend/.env
+    environment:
+      SECRET_KEY: ${SECRET_KEY:-dev-secret-key-change-in-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-stipuser}:${POSTGRES_PASSWORD:-stippass}@db:5432/${POSTGRES_DB:-stipendiya_db}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      CELERY_BROKER_URL: redis://redis:6379/1
+      CELERY_RESULT_BACKEND: redis://redis:6379/2
+      RATE_LIMIT_STORAGE_URI: redis://redis:6379/3
+    volumes:
+      - ./backend:/app
+    command: celery -A workers.celery_app.celery_app worker --loglevel=info
+    networks:
+      - stiptrack_net
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+    container_name: stiptrack-frontend
+    env_file:
+      - ./frontend/.env.local
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    command: npm run dev -- -H 0.0.0.0 -p 3000
+    ports:
+      - "${FRONTEND_PORT:-3000}:3000"
+    networks:
+      - stiptrack_net
+    depends_on:
+      - backend
+
+networks:
+  stiptrack_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
