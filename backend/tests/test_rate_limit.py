@@ -6,6 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 import app.api.v1.achievements as achievements_api
 import app.api.v1.auth as auth_api
@@ -13,6 +14,7 @@ import app.main as main_module
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import require_admin, require_student
+from app.core.rate_limit import rate_limit_key
 from app.main import app
 from app.models.enums import AIJobStatus, UserRole
 
@@ -89,8 +91,12 @@ def client(monkeypatch: pytest.MonkeyPatch):
     async def _ensure_bucket_exists() -> bool:
         return True
 
+    async def _ensure_bucket_policy() -> bool:
+        return True
+
     fake_redis = FakeRedis()
     monkeypatch.setattr(main_module, "ensure_bucket_exists", _ensure_bucket_exists)
+    monkeypatch.setattr(main_module, "ensure_bucket_policy", _ensure_bucket_policy)
     monkeypatch.setattr(main_module, "get_redis", lambda: fake_redis)
 
     with TestClient(app) as test_client:
@@ -110,8 +116,8 @@ def test_login_rate_limit_returns_429(client, monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(settings, "rate_limit_auth_login", "2/minute")
     monkeypatch.setattr(auth_api, "authenticate_user", _authenticate_user)
-    monkeypatch.setattr(auth_api, "create_access_token", lambda subject: ("access-token", 3600, "a-jti"))
-    monkeypatch.setattr(auth_api, "create_refresh_token", lambda subject: ("refresh-token", 2592000, "r-jti"))
+    monkeypatch.setattr(auth_api, "create_access_token", lambda subject, role="": ("access-token", 3600, "a-jti"))
+    monkeypatch.setattr(auth_api, "create_refresh_token", lambda subject, role="": ("refresh-token", 2592000, "r-jti"))
 
     app.dependency_overrides[get_db] = override_get_db
 
@@ -126,6 +132,28 @@ def test_login_rate_limit_returns_429(client, monkeypatch: pytest.MonkeyPatch):
     assert second.status_code == 200
     assert third.status_code == 429
     assert "Rate limit exceeded" in third.text
+
+
+def test_rate_limit_key_ignores_spoofed_proxy_headers():
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "scheme": "http",
+            "server": ("testserver", 80),
+            "root_path": "",
+            "headers": [
+                (b"x-forwarded-for", b"203.0.113.10"),
+                (b"x-real-ip", b"203.0.113.11"),
+            ],
+            "client": ("127.0.0.1", 4321),
+        }
+    )
+
+    assert rate_limit_key(request) == "127.0.0.1"
 
 
 def test_generate_columns_rate_limit_returns_429(client, monkeypatch: pytest.MonkeyPatch):

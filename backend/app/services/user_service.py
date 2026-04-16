@@ -49,6 +49,7 @@ async def list_users(
 
 
 async def create_user(db: AsyncSession, payload: UserAdminCreate) -> User:
+    is_supervisor = payload.is_supervisor if payload.role != UserRole.STUDENT else False
     user = User(
         full_name=payload.full_name,
         email=payload.email,
@@ -56,7 +57,7 @@ async def create_user(db: AsyncSession, payload: UserAdminCreate) -> User:
         role=payload.role,
         department=payload.department,
         student_id=payload.student_id,
-        is_supervisor=payload.is_supervisor,
+        is_supervisor=is_supervisor,
         is_active=payload.is_active,
     )
     db.add(user)
@@ -71,6 +72,10 @@ async def update_user(db: AsyncSession, user: User, payload: UserAdminUpdate) ->
     password = updates.pop("password", None)
     if password is not None:
         user.password_hash = hash_password(password)
+
+    next_role = updates.get("role", user.role)
+    if next_role == UserRole.STUDENT:
+        updates["is_supervisor"] = False
 
     for field, value in updates.items():
         setattr(user, field, value)
@@ -92,7 +97,10 @@ async def update_own_profile(db: AsyncSession, user: User, updates: dict) -> Use
 
 
 async def list_supervisors(db: AsyncSession, only_active: bool = True) -> list[User]:
-    query = select(User).where(User.is_supervisor.is_(True))
+    query = select(User).where(
+        User.is_supervisor.is_(True),
+        User.role.in_((UserRole.ADMIN, UserRole.JURY)),
+    )
 
     if only_active:
         query = query.where(User.is_active.is_(True))

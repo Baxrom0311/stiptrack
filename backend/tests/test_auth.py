@@ -6,7 +6,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from jose import JWTError
+from jwt.exceptions import PyJWTError
 
 import app.api.v1.auth as auth_api
 import app.main as main_module
@@ -75,7 +75,11 @@ def client(monkeypatch: pytest.MonkeyPatch, fake_user: SimpleNamespace, fake_red
     async def _ensure_bucket_exists() -> bool:
         return True
 
+    async def _ensure_bucket_policy() -> bool:
+        return True
+
     monkeypatch.setattr(main_module, "ensure_bucket_exists", _ensure_bucket_exists)
+    monkeypatch.setattr(main_module, "ensure_bucket_policy", _ensure_bucket_policy)
     monkeypatch.setattr(main_module, "get_redis", lambda: fake_redis)
     monkeypatch.setattr(auth_api, "get_redis", lambda: fake_redis)
 
@@ -100,6 +104,7 @@ def test_register_success(client, monkeypatch: pytest.MonkeyPatch):
         return None
 
     async def _create_student_user(db, user_in):
+        assert not hasattr(user_in, "is_supervisor")
         return build_user(email=user_in.email, full_name=user_in.full_name)
 
     monkeypatch.setattr(auth_api, "get_user_by_email", _get_user_by_email)
@@ -113,7 +118,7 @@ def test_register_success(client, monkeypatch: pytest.MonkeyPatch):
             "password": "strongpass123",
             "department": "Math",
             "student_id": "M-001",
-            "is_supervisor": False,
+            "is_supervisor": True,
         },
     )
 
@@ -121,6 +126,7 @@ def test_register_success(client, monkeypatch: pytest.MonkeyPatch):
     body = response.json()
     assert body["email"] == "ali@example.com"
     assert body["role"] == "student"
+    assert body["is_supervisor"] is False
 
 
 def test_login_returns_token_pair(client, fake_user: SimpleNamespace, monkeypatch: pytest.MonkeyPatch):
@@ -130,8 +136,8 @@ def test_login_returns_token_pair(client, fake_user: SimpleNamespace, monkeypatc
         return fake_user
 
     monkeypatch.setattr(auth_api, "authenticate_user", _authenticate_user)
-    monkeypatch.setattr(auth_api, "create_access_token", lambda subject: ("access-token", 3600, "a-jti"))
-    monkeypatch.setattr(auth_api, "create_refresh_token", lambda subject: ("refresh-token", 2592000, "r-jti"))
+    monkeypatch.setattr(auth_api, "create_access_token", lambda subject, role="": ("access-token", 3600, "a-jti"))
+    monkeypatch.setattr(auth_api, "create_refresh_token", lambda subject, role="": ("refresh-token", 2592000, "r-jti"))
 
     response = test_client.post(
         "/api/v1/auth/login",
@@ -165,8 +171,8 @@ def test_refresh_rotates_tokens_and_blacklists_old_one(
             "type": "refresh",
         },
     )
-    monkeypatch.setattr(auth_api, "create_access_token", lambda subject: ("new-access", 3600, "a-jti"))
-    monkeypatch.setattr(auth_api, "create_refresh_token", lambda subject: ("new-refresh", 2592000, "r-jti"))
+    monkeypatch.setattr(auth_api, "create_access_token", lambda subject, role="": ("new-access", 3600, "a-jti"))
+    monkeypatch.setattr(auth_api, "create_refresh_token", lambda subject, role="": ("new-refresh", 2592000, "r-jti"))
 
     response = test_client.post(
         "/api/v1/auth/refresh",
@@ -239,7 +245,7 @@ def test_refresh_invalid_token_returns_401(client, monkeypatch: pytest.MonkeyPat
     test_client, _ = client
 
     def _decode_invalid(token: str, expected_type: str):
-        raise JWTError("invalid token")
+        raise PyJWTError("invalid token")
 
     monkeypatch.setattr(auth_api, "decode_token_by_type", _decode_invalid)
 

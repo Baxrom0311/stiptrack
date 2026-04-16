@@ -9,7 +9,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.api.v1.evaluations as evaluations_api
-from app.models.enums import ApplicationStatus, UserRole
+from app.models.enums import ApplicationStatus, ScholarshipStatus, UserRole
 from app.schemas.evaluation import EvaluationUpdate
 
 
@@ -199,6 +199,7 @@ async def test_list_visible_evaluations_for_owner_adds_submitted_filter(monkeypa
         id=application_id,
         scholarship_id=uuid4(),
         student_id=student_id,
+        status=ApplicationStatus.REJECTED,
     )
 
     async def _fake_get_application(*args, **kwargs):
@@ -217,7 +218,16 @@ async def test_list_visible_evaluations_for_owner_adds_submitted_filter(monkeypa
         is_submitted=True,
         submitted_at=now,
     )
-    db = DummyDB(execute_results=[_ExecuteResult(items=[evaluation])])
+    db = DummyDB(
+        execute_results=[_ExecuteResult(items=[evaluation])],
+        get_map={
+            ("Scholarship", app_obj.scholarship_id): SimpleNamespace(
+                id=app_obj.scholarship_id,
+                blind_review_enabled=False,
+                status=ScholarshipStatus.DONE,
+            )
+        },
+    )
 
     result = await evaluations_api.list_visible_evaluations(
         application_id=application_id,
@@ -228,6 +238,42 @@ async def test_list_visible_evaluations_for_owner_adds_submitted_filter(monkeypa
     assert len(result) == 1
     assert result[0].is_submitted is True
     assert "is_submitted" in str(db.last_stmt)
+
+
+@pytest.mark.asyncio
+async def test_list_visible_evaluations_hides_reviews_from_student_until_final_status(monkeypatch: pytest.MonkeyPatch):
+    application_id = uuid4()
+    student_id = uuid4()
+    app_obj = SimpleNamespace(
+        id=application_id,
+        scholarship_id=uuid4(),
+        student_id=student_id,
+        status=ApplicationStatus.IN_REVIEW,
+    )
+
+    async def _fake_get_application(*args, **kwargs):
+        return app_obj
+
+    monkeypatch.setattr(evaluations_api, "_get_application_or_404", _fake_get_application)
+
+    db = DummyDB(
+        execute_results=[],
+        get_map={
+            ("Scholarship", app_obj.scholarship_id): SimpleNamespace(
+                id=app_obj.scholarship_id,
+                blind_review_enabled=False,
+                status=ScholarshipStatus.OPEN,
+            )
+        },
+    )
+    result = await evaluations_api.list_visible_evaluations(
+        application_id=application_id,
+        current_user=SimpleNamespace(id=student_id, role=UserRole.STUDENT),
+        db=db,
+    )
+
+    assert result == []
+    assert db.last_stmt is None
 
 
 @pytest.mark.asyncio

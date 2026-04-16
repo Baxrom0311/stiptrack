@@ -9,14 +9,6 @@ from app.core.config import settings
 
 
 def rate_limit_key(request: Request) -> str:
-    forwarded_for = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
-    if forwarded_for:
-        return forwarded_for
-
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip
-
     authorization = request.headers.get("authorization", "").strip()
     if authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
@@ -24,6 +16,8 @@ def rate_limit_key(request: Request) -> str:
             digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:24]
             return f"bearer:{digest}"
 
+    # Reverse-proxy header trust should be configured at the ASGI/server layer.
+    # Here we only rely on the server-populated client address.
     return request.client.host if request.client else "anonymous"
 
 
@@ -87,6 +81,11 @@ def limit_appeal_upload() -> str:
     return settings.rate_limit_appeal_upload
 
 
+# WARNING: in_memory_fallback_enabled=True means each Gunicorn worker
+# maintains its own counter when Redis is unavailable. In multi-worker
+# setups, the effective rate limit becomes N * configured_limit.
+# This is acceptable as a degradation strategy — it's better than
+# completely disabling rate limiting when Redis is down.
 limiter = Limiter(
     key_func=rate_limit_key,
     headers_enabled=False,

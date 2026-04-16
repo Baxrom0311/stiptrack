@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 from app.core.database import get_db
 from app.core.deps import get_current_user, require_jury
 from app.models.application import Application
-from app.models.enums import ApplicationStatus, UserRole
+from app.models.enums import ApplicationStatus, ScholarshipStatus, UserRole
 from app.models.evaluation import Evaluation
 from app.models.scholarship import Scholarship
 from app.models.user import User
@@ -31,6 +31,11 @@ from app.services.notification_service import queue_application_status_email_tas
 
 
 router = APIRouter(prefix="/evaluations", tags=["evaluations"])
+
+STUDENT_VISIBLE_FINAL_STATUSES = {
+    ApplicationStatus.WINNER,
+    ApplicationStatus.REJECTED,
+}
 
 
 async def _get_application_or_404(db: AsyncSession, application_id: uuid.UUID) -> Application:
@@ -130,6 +135,12 @@ async def list_visible_evaluations(
 
     if not (is_owner or is_admin or is_assigned_jury):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Ruxsat yo'q")
+    if is_owner and (
+        application.status not in STUDENT_VISIBLE_FINAL_STATUSES
+        or scholarship is None
+        or scholarship.status != ScholarshipStatus.DONE
+    ):
+        return []
 
     query = select(Evaluation).where(Evaluation.application_id == application_id)
     if is_owner:

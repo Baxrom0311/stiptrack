@@ -60,6 +60,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["applications"])
 
+APPEALABLE_APPLICATION_STATUSES = {
+    ApplicationStatus.WINNER,
+    ApplicationStatus.REJECTED,
+}
+
 
 def _validate_number_value(column: ScholarshipColumn, value_text: str | None) -> None:
     if column.field_type != ColumnFieldType.NUMBER or value_text is None:
@@ -390,99 +395,15 @@ async def update_application(
     current_user: Annotated[User, Depends(require_student)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ApplicationOut:
-    result = await db.execute(
-        select(Application)
-        .options(
-            selectinload(Application.values),
-            selectinload(Application.scholarship).selectinload(Scholarship.columns),
-        )
-        .where(
-            Application.id == application_id,
-            Application.student_id == current_user.id,
-        )
-    )
-    application = result.scalar_one_or_none()
-    if application is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ariza topilmadi")
-
-    if application.status != ApplicationStatus.DRAFT:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Topshirilgan arizani o'zgartirish mumkin emas",
-        )
-
-    await _ensure_stage_allows(
+    from app.services.application_service import update_draft_application
+    
+    application = await update_draft_application(
         db=db,
-        scholarship_id=application.scholarship_id,
-        allowed_stage_types=(ScholarshipStageType.APPLICATION,),
+        application_id=application_id,
+        user_id=current_user.id,
+        payload_data=payload.model_dump(exclude_unset=True),
     )
-
-    if "supervisor_id" in payload.model_fields_set:
-        if payload.supervisor_id is None:
-            application.supervisor_id = None
-        else:
-            supervisor = await db.get(User, payload.supervisor_id)
-            if supervisor is None or not supervisor.is_supervisor:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Noto'g'ri ilmiy rahbar tanlandi",
-                )
-            application.supervisor_id = payload.supervisor_id
-
-    if payload.values:
-        columns_by_id = {column.id: column for column in application.scholarship.columns}
-        values_by_column_id = {value.column_id: value for value in application.values}
-        touched_text_column_ids: set[uuid.UUID] = set()
-
-        for raw_column_id, value_text in payload.values.items():
-            try:
-                column_id = uuid.UUID(str(raw_column_id))
-            except ValueError as exc:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail=f"Noto'g'ri column_id: {raw_column_id}",
-                ) from exc
-
-            if column_id not in columns_by_id:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Ustun ushbu stipendiyaga tegishli emas",
-                )
-
-            column = columns_by_id[column_id]
-            existing_value = values_by_column_id.get(column_id)
-
-            if column.field_type == ColumnFieldType.FILE:
-                if value_text is None and existing_value is not None:
-                    existing_value.value_file_url = None
-                continue
-
-            _validate_number_value(column, value_text)
-            if column.field_type in (ColumnFieldType.TEXT, ColumnFieldType.TEXTAREA, ColumnFieldType.URL):
-                touched_text_column_ids.add(column_id)
-
-            if existing_value is not None:
-                existing_value.value_text = value_text
-            elif value_text is not None:
-                new_value = ApplicationValue(
-                    application_id=application.id,
-                    column_id=column_id,
-                    value_text=value_text,
-                )
-                db.add(new_value)
-                application.values.append(new_value)
-                values_by_column_id[column_id] = new_value
-
-        if touched_text_column_ids:
-            await _check_application_plagiarism(
-                db=db,
-                application=application,
-                columns_by_id=columns_by_id,
-                target_column_ids=touched_text_column_ids,
-            )
-
-    await db.commit()
-
+    
     refreshed = await _get_application_or_404(db, application.id, with_relations=True)
     return _serialize_application_detail(refreshed, current_user)
 
@@ -547,11 +468,17 @@ async def upload_value_file(
         allowed_stage_types=(ScholarshipStageType.APPLICATION,),
     )
 
-    valid_column_ids = {column.id for column in application.scholarship.columns}
-    if column_id not in valid_column_ids:
+    columns_by_id = {column.id: column for column in application.scholarship.columns}
+    column = columns_by_id.get(column_id)
+    if column is None:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Ustun ushbu stipendiyaga tegishli emas",
+        )
+    if column.field_type != ColumnFieldType.FILE:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Faqat fayl turidagi ustun uchun upload qilish mumkin",
         )
 
     file_ref = await upload_file(file=file, folder="application")
@@ -566,6 +493,7 @@ async def upload_value_file(
             )
         )
     else:
+        existing_value.value_text = None
         existing_value.value_file_url = file_ref
 
     await db.commit()
@@ -581,93 +509,20 @@ async def submit_application(
     db: Annotated[AsyncSession, Depends(get_db)],
     request: Request = None,
 ) -> ApplicationOut:
-    result = await db.execute(
-        select(Application)
-        .options(
-            selectinload(Application.values),
-            selectinload(Application.scholarship).selectinload(Scholarship.columns),
-        )
-        .where(
-            Application.id == application_id,
-            Application.student_id == current_user.id,
-        )
-    )
-    application = result.scalar_one_or_none()
+    from app.services.application_service import submit_application as submit_app_service
 
-    if application is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ariza topilmadi")
-
-    if application.status != ApplicationStatus.DRAFT:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Ariza allaqachon topshirilgan",
-        )
-
-    if application.scholarship.status != ScholarshipStatus.OPEN:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Stipendiya hozir ochiq emas",
-        )
-
-    await _ensure_stage_allows(
+    application, status_log = await submit_app_service(
         db=db,
-        scholarship_id=application.scholarship_id,
-        allowed_stage_types=(ScholarshipStageType.APPLICATION,),
+        application_id=application_id,
+        user_id=current_user.id,
     )
-
-    filled_columns = {
-        value.column_id
-        for value in application.values
-        if (value.value_text and value.value_text.strip()) or value.value_file_url
-    }
-    required_columns = {
-        column.id
-        for column in application.scholarship.columns
-        if column.is_required
-    }
-    missing_columns = [str(column_id) for column_id in (required_columns - filled_columns)]
-
-    if missing_columns:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": "Majburiy maydonlar to'ldirilmagan", "missing_columns": missing_columns},
-        )
-
-    columns_by_id = {column.id: column for column in application.scholarship.columns}
-    for value in application.values:
-        column = columns_by_id.get(value.column_id)
-        if column is not None:
-            _validate_number_value(column, value.value_text)
-
-    await _check_application_plagiarism(
-        db=db,
-        application=application,
-        columns_by_id=columns_by_id,
-        target_column_ids={
-            column.id
-            for column in application.scholarship.columns
-            if column.field_type in (ColumnFieldType.TEXT, ColumnFieldType.TEXTAREA, ColumnFieldType.URL)
-        },
-    )
-
-    status_log = transition_application_status(
-        db=db,
-        application=application,
-        new_status=ApplicationStatus.SUBMITTED,
-        changed_by_user_id=current_user.id,
-        source="student_submit",
-        note="Talaba arizani topshirdi",
-    )
-    application.submitted_at = datetime.now(timezone.utc)
-
+    
+    if status_log is not None:
+        queue_application_status_email_tasks([status_log.id])
+        
     should_run_ai = application.scholarship.ai_analysis_enabled and any(
         column.ai_analyze for column in application.scholarship.columns
     )
-
-    await db.commit()
-    await db.refresh(application)
-    if status_log is not None:
-        queue_application_status_email_tasks([status_log.id])
 
     if should_run_ai:
         try:
@@ -809,6 +664,11 @@ async def create_appeal(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Apellyatsiya faqat yakunlangan stipendiyada ochiladi",
         )
+    if application.status not in APPEALABLE_APPLICATION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Apellyatsiya faqat yakuniy natija chiqqan ariza uchun ochiladi",
+        )
 
     await _ensure_stage_allows(
         db=db,
@@ -865,6 +725,11 @@ async def upload_appeal_file(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Apellyatsiya fayli faqat yakunlangan stipendiyada yuklanadi",
+        )
+    if application.status not in APPEALABLE_APPLICATION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Apellyatsiya fayli faqat yakuniy natija chiqqan ariza uchun yuklanadi",
         )
 
     await _ensure_stage_allows(

@@ -43,11 +43,8 @@ def _get_session_factory() -> async_sessionmaker:
 
 
 def _run_async(coro: Any) -> Any:
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    with asyncio.Runner() as runner:
+        return runner.run(coro)
 
 
 @celery_app.task(name="health.echo")

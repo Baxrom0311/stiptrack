@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from jose import JWTError
+from jwt.exceptions import PyJWTError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -67,9 +67,9 @@ async def _blacklist_refresh_token(jti: str, exp: int | None) -> None:
     await redis_client.setex(_build_refresh_blacklist_key(jti), ttl, "1")
 
 
-def _token_pair_for_user(user_id: uuid.UUID) -> TokenPair:
-    access_token, access_expires_in, _ = create_access_token(subject=str(user_id))
-    refresh_token, refresh_expires_in, _ = create_refresh_token(subject=str(user_id))
+def _token_pair_for_user(user_id: uuid.UUID, role: str = "") -> TokenPair:
+    access_token, access_expires_in, _ = create_access_token(subject=str(user_id), role=role)
+    refresh_token, refresh_expires_in, _ = create_refresh_token(subject=str(user_id), role=role)
 
     return TokenPair(
         access_token=access_token,
@@ -108,7 +108,7 @@ async def login(
             detail="Invalid email or password",
         )
 
-    return _token_pair_for_user(user_id=user.id)
+    return _token_pair_for_user(user_id=user.id, role=user.role.value)
 
 
 @router.post("/refresh", response_model=TokenPair)
@@ -120,7 +120,7 @@ async def refresh(
 ) -> TokenPair:
     try:
         token_data = decode_token_by_type(payload.refresh_token, expected_type=TokenType.REFRESH)
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
 
     jti = str(token_data.get("jti", ""))
@@ -144,7 +144,7 @@ async def refresh(
 
     await _blacklist_refresh_token(jti=jti, exp=exp)
 
-    return _token_pair_for_user(user_id=user.id)
+    return _token_pair_for_user(user_id=user.id, role=user.role.value)
 
 
 @router.post("/logout", response_model=MessageResponse)
@@ -152,7 +152,7 @@ async def refresh(
 async def logout(payload: LogoutRequest, request: Request = None) -> MessageResponse:
     try:
         token_data = decode_token_by_type(payload.refresh_token, expected_type=TokenType.REFRESH)
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid refresh token") from exc
 
     jti = str(token_data.get("jti", ""))

@@ -6,7 +6,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
-from jose import JWTError, jwt
+import jwt
+from jwt.exceptions import PyJWTError
 
 from app.core.config import settings
 
@@ -35,16 +36,19 @@ def _build_token(
     subject: str,
     token_type: str,
     expires_delta: timedelta,
+    role: str = "",
 ) -> tuple[str, int, str]:
     expire_at = datetime.now(timezone.utc) + expires_delta
     token_jti = str(uuid.uuid4())
 
-    payload = {
+    payload: dict = {
         "sub": subject,
         "type": token_type,
         "jti": token_jti,
         "exp": expire_at,
     }
+    if role:
+        payload["role"] = role
 
     encoded_jwt = jwt.encode(payload, settings.secret_key, algorithm=settings.algorithm)
     expires_in_seconds = int(expires_delta.total_seconds())
@@ -52,14 +56,14 @@ def _build_token(
     return encoded_jwt, expires_in_seconds, token_jti
 
 
-def create_access_token(subject: str) -> tuple[str, int, str]:
+def create_access_token(subject: str, role: str = "") -> tuple[str, int, str]:
     expires_delta = timedelta(minutes=settings.access_token_expire_minutes)
-    return _build_token(subject=subject, token_type=TokenType.ACCESS, expires_delta=expires_delta)
+    return _build_token(subject=subject, token_type=TokenType.ACCESS, expires_delta=expires_delta, role=role)
 
 
-def create_refresh_token(subject: str) -> tuple[str, int, str]:
+def create_refresh_token(subject: str, role: str = "") -> tuple[str, int, str]:
     expires_delta = timedelta(days=settings.refresh_token_expire_days)
-    return _build_token(subject=subject, token_type=TokenType.REFRESH, expires_delta=expires_delta)
+    return _build_token(subject=subject, token_type=TokenType.REFRESH, expires_delta=expires_delta, role=role)
 
 
 def decode_token(token: str) -> dict:
@@ -71,6 +75,6 @@ def decode_token_by_type(token: str, expected_type: str) -> dict:
     token_type = payload.get("type")
 
     if token_type != expected_type:
-        raise JWTError("Invalid token type")
+        raise PyJWTError("Invalid token type")
 
     return payload

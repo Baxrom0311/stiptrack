@@ -42,8 +42,12 @@ def client(monkeypatch: pytest.MonkeyPatch):
     async def _ensure_bucket_exists() -> bool:
         return True
 
+    async def _ensure_bucket_policy() -> bool:
+        return True
+
     fake_redis = FakeRedis()
     monkeypatch.setattr(main_module, "ensure_bucket_exists", _ensure_bucket_exists)
+    monkeypatch.setattr(main_module, "ensure_bucket_policy", _ensure_bucket_policy)
     monkeypatch.setattr(main_module, "get_redis", lambda: fake_redis)
 
     with TestClient(app) as test_client:

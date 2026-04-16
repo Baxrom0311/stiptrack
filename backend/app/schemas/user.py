@@ -14,7 +14,6 @@ class UserCreate(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     department: str | None = Field(default=None, max_length=100)
     student_id: str | None = Field(default=None, max_length=50)
-    is_supervisor: bool = False
 
 
 class UserLogin(BaseModel):

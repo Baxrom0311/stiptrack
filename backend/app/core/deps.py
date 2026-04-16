@@ -5,7 +5,7 @@ from typing import Annotated
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
-from jose import JWTError
+from jwt.exceptions import PyJWTError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +34,7 @@ async def get_current_user(
 
     try:
         payload = decode_token_by_type(token=token, expected_type=TokenType.ACCESS)
-    except JWTError as exc:
+    except PyJWTError as exc:
         raise credentials_exception from exc
 
     user_id = payload.get("sub")

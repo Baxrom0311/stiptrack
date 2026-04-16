@@ -10,6 +10,7 @@ from fastapi import HTTPException
 
 import app.api.v1.scholarships as scholarships_api
 import app.schemas.scholarship as scholarship_schema
+import app.services.scholarship_service as scholarship_service
 from app.models.enums import ColumnFieldType, ScholarshipStatus, UserRole
 from app.schemas.scholarship import (
     ColumnCreate,
@@ -108,6 +109,11 @@ class DummyDB:
 
     async def delete(self, obj: object) -> None:
         self.deleted.append(obj)
+
+
+def _patch_scholarship_lookup(monkeypatch: pytest.MonkeyPatch, lookup_mock) -> None:
+    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", lookup_mock)
+    monkeypatch.setattr(scholarship_service, "get_scholarship_or_404", lookup_mock)
 
 
 def _build_scholarship(status: ScholarshipStatus) -> SimpleNamespace:
@@ -255,7 +261,7 @@ async def test_update_scholarship_updates_allowed_fields(monkeypatch: pytest.Mon
     async def _fake_get_scholarship(*args, **kwargs):
         return scholarship
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     result = await scholarships_api.update_scholarship(
         scholarship_id=scholarship.id,
@@ -288,7 +294,7 @@ async def test_delete_scholarship_removes_draft(monkeypatch: pytest.MonkeyPatch)
     async def _fake_get_scholarship(*args, **kwargs):
         return scholarship
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     await scholarships_api.delete_scholarship(
         scholarship_id=scholarship.id,
@@ -308,7 +314,7 @@ async def test_change_status_accepts_only_next_transition(monkeypatch: pytest.Mo
     async def _fake_get_scholarship(*args, **kwargs):
         return scholarship
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     result = await scholarships_api.change_scholarship_status(
         scholarship_id=uuid4(),
@@ -331,7 +337,7 @@ async def test_change_status_rejects_skipped_transition(monkeypatch: pytest.Monk
     async def _fake_get_scholarship(*args, **kwargs):
         return scholarship
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     with pytest.raises(HTTPException) as exc_info:
         await scholarships_api.change_scholarship_status(
@@ -354,7 +360,7 @@ async def test_change_status_rejects_when_already_final(monkeypatch: pytest.Monk
     async def _fake_get_scholarship(*args, **kwargs):
         return scholarship
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     with pytest.raises(HTTPException) as exc_info:
         await scholarships_api.change_scholarship_status(
@@ -378,7 +384,7 @@ async def test_upload_nizom_stores_object_key_and_returns_presigned_url(monkeypa
     async def _fake_get_scholarship(*args, **kwargs):
         return scholarship
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
     monkeypatch.setattr(scholarships_api, "upload_file", upload_file)
     monkeypatch.setattr(
         scholarships_api,
@@ -417,7 +423,7 @@ async def test_create_column_uses_next_order_index(monkeypatch: pytest.MonkeyPat
     async def _fake_get_scholarship(*args, **kwargs):
         return _build_scholarship(ScholarshipStatus.DRAFT)
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     result = await scholarships_api.create_column(
         scholarship_id=scholarship_id,
@@ -448,7 +454,7 @@ async def test_create_number_column_saves_input_range(monkeypatch: pytest.Monkey
     async def _fake_get_scholarship(*args, **kwargs):
         return _build_scholarship(ScholarshipStatus.DRAFT)
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     result = await scholarships_api.create_column(
         scholarship_id=scholarship_id,
@@ -542,7 +548,7 @@ async def test_reorder_columns_updates_all_known_columns(monkeypatch: pytest.Mon
     async def _fake_get_scholarship(*args, **kwargs):
         return _build_scholarship(ScholarshipStatus.DRAFT)
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     result = await scholarships_api.reorder_columns(
         scholarship_id=scholarship_id,
@@ -587,7 +593,7 @@ async def test_assign_jury_creates_new_assignment(monkeypatch: pytest.MonkeyPatc
     async def _fake_get_scholarship(*args, **kwargs):
         return _build_scholarship(ScholarshipStatus.DRAFT)
 
-    monkeypatch.setattr(scholarships_api, "_get_scholarship_or_404", _fake_get_scholarship)
+    _patch_scholarship_lookup(monkeypatch, _fake_get_scholarship)
 
     result = await scholarships_api.assign_jury(
         scholarship_id=scholarship_id,

@@ -55,7 +55,6 @@ export default function RegisterPage() {
         password: parsed.data.password,
         department: parsed.data.department || null,
         student_id: parsed.data.student_id || null,
-        is_supervisor: false,
       })
     },
     onSuccess: () => {

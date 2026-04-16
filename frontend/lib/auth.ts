@@ -12,7 +12,6 @@ export type RegisterPayload = {
   password: string
   department?: string | null
   student_id?: string | null
-  is_supervisor?: boolean
 }
 
 export type UpdateMePayload = {

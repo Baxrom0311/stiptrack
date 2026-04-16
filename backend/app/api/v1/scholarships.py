@@ -202,25 +202,14 @@ async def create_column(
     _: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ColumnOut:
-    await _get_scholarship_or_404(db, scholarship_id)
-
-    result = await db.execute(
-        select(ScholarshipColumn.order_index)
-        .where(ScholarshipColumn.scholarship_id == scholarship_id)
-        .order_by(ScholarshipColumn.order_index.desc())
-        .limit(1)
-    )
-    last_order = result.scalar_one_or_none() or -1
-
-    column_payload = _normalize_column_payload(payload.model_dump(), payload.field_type)
-    column = ScholarshipColumn(
+    from app.services.scholarship_service import create_scholarship_column
+    
+    column = await create_scholarship_column(
+        db=db,
         scholarship_id=scholarship_id,
-        order_index=last_order + 1,
-        **column_payload,
+        payload_data=payload.model_dump(),
+        field_type=payload.field_type,
     )
-    db.add(column)
-    await db.commit()
-    await db.refresh(column)
     return ColumnOut.model_validate(column)
 
 
@@ -232,25 +221,14 @@ async def update_column(
     _: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ColumnOut:
-    result = await db.execute(
-        select(ScholarshipColumn).where(
-            ScholarshipColumn.id == column_id,
-            ScholarshipColumn.scholarship_id == scholarship_id,
-        )
+    from app.services.scholarship_service import update_scholarship_column
+    
+    column = await update_scholarship_column(
+        db=db,
+        scholarship_id=scholarship_id,
+        column_id=column_id,
+        payload_data=payload.model_dump(exclude_unset=True),
     )
-    column = result.scalar_one_or_none()
-    if column is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ustun topilmadi")
-
-    payload_data = payload.model_dump(exclude_unset=True)
-    next_field_type = payload_data.get("field_type", column.field_type)
-    payload_data = _normalize_column_payload(payload_data, next_field_type)
-
-    for field, value in payload_data.items():
-        setattr(column, field, value)
-
-    await db.commit()
-    await db.refresh(column)
     return ColumnOut.model_validate(column)
 
 
@@ -265,18 +243,13 @@ async def delete_column(
     _: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(ScholarshipColumn).where(
-            ScholarshipColumn.id == column_id,
-            ScholarshipColumn.scholarship_id == scholarship_id,
-        )
+    from app.services.scholarship_service import delete_scholarship_column
+    
+    await delete_scholarship_column(
+        db=db,
+        scholarship_id=scholarship_id,
+        column_id=column_id,
     )
-    column = result.scalar_one_or_none()
-    if column is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Ustun topilmadi")
-
-    await db.delete(column)
-    await db.commit()
 
 
 @router.patch("/{scholarship_id}/columns/reorder")
@@ -286,20 +259,13 @@ async def reorder_columns(
     _: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    await _get_scholarship_or_404(db, scholarship_id)
-
-    for idx, column_id in enumerate(payload.order):
-        result = await db.execute(
-            select(ScholarshipColumn).where(
-                ScholarshipColumn.id == column_id,
-                ScholarshipColumn.scholarship_id == scholarship_id,
-            )
-        )
-        column = result.scalar_one_or_none()
-        if column is not None:
-            column.order_index = idx
-
-    await db.commit()
+    from app.services.scholarship_service import reorder_scholarship_columns
+    
+    await reorder_scholarship_columns(
+        db=db,
+        scholarship_id=scholarship_id,
+        order=payload.order,
+    )
     return {"detail": "Tartib yangilandi"}
 
 
@@ -328,29 +294,13 @@ async def assign_jury(
     _: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    await _get_scholarship_or_404(db, scholarship_id)
-
-    result = await db.execute(
-        select(User).where(User.id == payload.jury_id, User.role == UserRole.JURY)
+    from app.services.scholarship_service import assign_scholarship_jury
+    
+    await assign_scholarship_jury(
+        db=db,
+        scholarship_id=scholarship_id,
+        jury_id=payload.jury_id,
     )
-    jury_user = result.scalar_one_or_none()
-    if jury_user is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Hakam topilmadi")
-
-    existing = await db.execute(
-        select(JuryAssignment).where(
-            JuryAssignment.scholarship_id == scholarship_id,
-            JuryAssignment.jury_id == payload.jury_id,
-        )
-    )
-    assignment = existing.scalar_one_or_none()
-
-    if assignment is not None:
-        assignment.is_active = True
-    else:
-        db.add(JuryAssignment(scholarship_id=scholarship_id, jury_id=payload.jury_id, is_active=True))
-
-    await db.commit()
     return {"detail": "Hakam biriktirildi"}
 
 
@@ -365,15 +315,10 @@ async def remove_jury(
     _: Annotated[User, Depends(require_admin)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ):
-    result = await db.execute(
-        select(JuryAssignment).where(
-            JuryAssignment.scholarship_id == scholarship_id,
-            JuryAssignment.jury_id == jury_id,
-        )
+    from app.services.scholarship_service import remove_scholarship_jury
+    
+    await remove_scholarship_jury(
+        db=db,
+        scholarship_id=scholarship_id,
+        jury_id=jury_id,
     )
-    assignment = result.scalar_one_or_none()
-    if assignment is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Biriktirilgan hakam topilmadi")
-
-    assignment.is_active = False
-    await db.commit()

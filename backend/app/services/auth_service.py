@@ -23,7 +23,7 @@ async def create_student_user(db: AsyncSession, user_in: UserCreate) -> User:
         role=UserRole.STUDENT,
         department=user_in.department,
         student_id=user_in.student_id,
-        is_supervisor=user_in.is_supervisor,
+        is_supervisor=False,
         is_active=True,
     )
     db.add(user)

@@ -13,6 +13,7 @@ import app.schemas.application as application_schema
 import app.schemas.scholarship as scholarship_schema
 import app.schemas.workflow as workflow_schema
 import app.services.application_service as application_service
+import app.services.plagiarism_service as plagiarism_service
 from app.models.enums import (
     AchievementType,
     AppealStatus,
@@ -120,6 +121,15 @@ class DummyDB:
 
     async def delete(self, obj: object) -> None:
         self.deleted.append(obj)
+
+
+def _patch_stage_guard(monkeypatch: pytest.MonkeyPatch, stage_mock: AsyncMock) -> None:
+    monkeypatch.setattr(applications_api, "_ensure_stage_allows", stage_mock)
+    monkeypatch.setattr(application_service, "ensure_stage_allows", stage_mock)
+
+
+def _patch_plagiarism_refresh(monkeypatch: pytest.MonkeyPatch, refresh_mock: AsyncMock) -> None:
+    monkeypatch.setattr(plagiarism_service, "refresh_application_plagiarism_checks", refresh_mock)
 
 
 def _build_user(role: UserRole = UserRole.STUDENT, **overrides: object) -> SimpleNamespace:
@@ -303,7 +313,7 @@ async def test_create_or_get_application_creates_draft_when_missing(monkeypatch:
     scholarship = _build_scholarship(status=ScholarshipStatus.OPEN)
     db = DummyDB(execute_results=[_ExecuteResult(scalar=None)], get_map={("Scholarship", scholarship.id): scholarship})
     ensure_stage = AsyncMock(return_value=None)
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
 
     result = await applications_api.create_or_get_application(
         scholarship_id=scholarship.id,
@@ -623,8 +633,8 @@ async def test_update_application_updates_supervisor_and_values(monkeypatch: pyt
     )
     ensure_stage = AsyncMock(return_value=None)
     plagiarism_check = AsyncMock(return_value=None)
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
-    monkeypatch.setattr(applications_api, "_check_application_plagiarism", plagiarism_check)
+    _patch_stage_guard(monkeypatch, ensure_stage)
+    _patch_plagiarism_refresh(monkeypatch, plagiarism_check)
 
     result = await applications_api.update_application(
         application_id=application.id,
@@ -740,7 +750,7 @@ async def test_update_application_rejects_number_value_below_min(monkeypatch: py
     )
     db = DummyDB(execute_results=[_ExecuteResult(scalar=application)])
     ensure_stage = AsyncMock(return_value=None)
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
 
     with pytest.raises(HTTPException) as exc_info:
         await applications_api.update_application(
@@ -763,7 +773,7 @@ async def test_upload_value_file_creates_new_file_value(monkeypatch: pytest.Monk
     db = DummyDB(execute_results=[_ExecuteResult(scalar=application), _ExecuteResult(scalar=application)])
     ensure_stage = AsyncMock(return_value=None)
     upload_file = AsyncMock(return_value="application/test.pdf")
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
     monkeypatch.setattr(applications_api, "upload_file", upload_file)
     monkeypatch.setattr(
         applications_api,
@@ -786,6 +796,29 @@ async def test_upload_value_file_creates_new_file_value(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
+async def test_upload_value_file_rejects_non_file_column(monkeypatch: pytest.MonkeyPatch):
+    student = _build_user()
+    column = _build_column(field_type=ColumnFieldType.TEXTAREA)
+    scholarship = _build_scholarship(columns=[column])
+    application = _build_application(ApplicationStatus.DRAFT, scholarship=scholarship, student=student, values=[])
+    db = DummyDB(execute_results=[_ExecuteResult(scalar=application)])
+    ensure_stage = AsyncMock(return_value=None)
+    _patch_stage_guard(monkeypatch, ensure_stage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await applications_api.upload_value_file(
+            application_id=application.id,
+            column_id=column.id,
+            current_user=student,
+            db=db,
+            file=SimpleNamespace(filename="test.pdf"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Faqat fayl turidagi ustun uchun upload qilish mumkin"
+
+
+@pytest.mark.asyncio
 async def test_update_application_clears_file_value_when_null_sent(monkeypatch: pytest.MonkeyPatch):
     student = _build_user()
     file_column = _build_column(field_type=ColumnFieldType.FILE, name="Sertifikat")
@@ -799,7 +832,7 @@ async def test_update_application_clears_file_value_when_null_sent(monkeypatch: 
     )
     db = DummyDB(execute_results=[_ExecuteResult(scalar=application), _ExecuteResult(scalar=application)])
     ensure_stage = AsyncMock(return_value=None)
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
 
     result = await applications_api.update_application(
         application_id=application.id,
@@ -832,8 +865,8 @@ async def test_submit_application_marks_submitted_when_required_fields_present(m
     ensure_stage = AsyncMock(return_value=None)
     plagiarism_check = AsyncMock(return_value=None)
     queued_status_log_ids: list[list] = []
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
-    monkeypatch.setattr(applications_api, "_check_application_plagiarism", plagiarism_check)
+    _patch_stage_guard(monkeypatch, ensure_stage)
+    _patch_plagiarism_refresh(monkeypatch, plagiarism_check)
     monkeypatch.setattr(
         applications_api,
         "queue_application_status_email_tasks",
@@ -878,7 +911,7 @@ async def test_submit_application_rejects_number_value_above_max(monkeypatch: py
     )
     db = DummyDB(execute_results=[_ExecuteResult(scalar=application)])
     ensure_stage = AsyncMock(return_value=None)
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
 
     with pytest.raises(HTTPException) as exc_info:
         await applications_api.submit_application(
@@ -889,6 +922,42 @@ async def test_submit_application_rejects_number_value_above_max(monkeypatch: py
 
     assert exc_info.value.status_code == 400
     assert "4 dan katta" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_submit_application_rejects_required_text_column_with_only_file_value(monkeypatch: pytest.MonkeyPatch):
+    student = _build_user()
+    required_column = _build_column(
+        name="Motivatsiya",
+        field_type=ColumnFieldType.TEXTAREA,
+        is_required=True,
+        ai_analyze=False,
+    )
+    scholarship = _build_scholarship(
+        status=ScholarshipStatus.OPEN,
+        columns=[required_column],
+        ai_analysis_enabled=False,
+    )
+    application = _build_application(
+        ApplicationStatus.DRAFT,
+        scholarship=scholarship,
+        student=student,
+        values=[_build_value(required_column, value_text=None, value_file_url="application/fake.pdf")],
+    )
+    db = DummyDB(execute_results=[_ExecuteResult(scalar=application)])
+    ensure_stage = AsyncMock(return_value=None)
+    _patch_stage_guard(monkeypatch, ensure_stage)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await applications_api.submit_application(
+            application_id=application.id,
+            current_user=student,
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail["message"] == "Majburiy maydonlar to'ldirilmagan"
+    assert exc_info.value.detail["missing_columns"] == [str(required_column.id)]
 
 
 @pytest.mark.asyncio
@@ -959,7 +1028,7 @@ async def test_announce_winners_marks_scholarship_done(monkeypatch: pytest.Monke
         kwargs["status_log_ids_out"].extend([uuid4(), uuid4()])
         return ["app-1", "app-2"]
 
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
     monkeypatch.setattr(applications_api, "_recalculate_winners_for_scholarship", _fake_recalculate)
     monkeypatch.setattr(
         applications_api,
@@ -999,7 +1068,7 @@ async def test_create_appeal_creates_new_record(monkeypatch: pytest.MonkeyPatch)
         return application
 
     monkeypatch.setattr(applications_api, "_get_application_or_404", _fake_get_application)
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
 
     result = await applications_api.create_appeal(
         application_id=application.id,
@@ -1049,6 +1118,34 @@ async def test_create_appeal_denies_non_owner_student(monkeypatch: pytest.Monkey
 
 
 @pytest.mark.asyncio
+async def test_create_appeal_rejects_non_final_application(monkeypatch: pytest.MonkeyPatch):
+    student = _build_user()
+    scholarship = _build_scholarship(status=ScholarshipStatus.DONE)
+    application = _build_application(
+        ApplicationStatus.DRAFT,
+        scholarship=scholarship,
+        student=student,
+    )
+    db = DummyDB(get_map={("Scholarship", scholarship.id): scholarship})
+
+    async def _fake_get_application(*args, **kwargs):
+        return application
+
+    monkeypatch.setattr(applications_api, "_get_application_or_404", _fake_get_application)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await applications_api.create_appeal(
+            application_id=application.id,
+            payload=AppealCreate(reason="Natijani qayta ko'rib chiqing iltimos"),
+            current_user=student,
+            db=db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Apellyatsiya faqat yakuniy natija chiqqan ariza uchun ochiladi"
+
+
+@pytest.mark.asyncio
 async def test_upload_appeal_file_returns_uploaded_url(monkeypatch: pytest.MonkeyPatch):
     student = _build_user()
     scholarship = _build_scholarship(status=ScholarshipStatus.DONE)
@@ -1061,7 +1158,7 @@ async def test_upload_appeal_file_returns_uploaded_url(monkeypatch: pytest.Monke
         return application
 
     monkeypatch.setattr(applications_api, "_get_application_or_404", _fake_get_application)
-    monkeypatch.setattr(applications_api, "_ensure_stage_allows", ensure_stage)
+    _patch_stage_guard(monkeypatch, ensure_stage)
     monkeypatch.setattr(applications_api, "upload_file", upload_file)
     monkeypatch.setattr(
         applications_api,
@@ -1077,6 +1174,30 @@ async def test_upload_appeal_file_returns_uploaded_url(monkeypatch: pytest.Monke
     )
 
     assert result["file_url"] == "https://signed.example/appeal/test.pdf"
+
+
+@pytest.mark.asyncio
+async def test_upload_appeal_file_rejects_non_final_application(monkeypatch: pytest.MonkeyPatch):
+    student = _build_user()
+    scholarship = _build_scholarship(status=ScholarshipStatus.DONE)
+    application = _build_application(ApplicationStatus.DRAFT, scholarship=scholarship, student=student)
+    db = DummyDB(get_map={("Scholarship", scholarship.id): scholarship})
+
+    async def _fake_get_application(*args, **kwargs):
+        return application
+
+    monkeypatch.setattr(applications_api, "_get_application_or_404", _fake_get_application)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await applications_api.upload_appeal_file(
+            application_id=application.id,
+            current_user=student,
+            db=db,
+            file=SimpleNamespace(filename="appeal.pdf"),
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == "Apellyatsiya fayli faqat yakuniy natija chiqqan ariza uchun yuklanadi"
 
 
 @pytest.mark.asyncio

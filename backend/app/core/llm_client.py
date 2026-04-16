@@ -50,8 +50,8 @@ class BaseLLMClient(ABC):
         try:
             return json.loads(cleaned)
         except json.JSONDecodeError as exc:
-            logger.error("LLM JSON parse xatosi: %s", exc)
-            raise ValueError(f"LLM valid JSON qaytarmadi: {exc}") from exc
+            logger.error("LLM JSON parse xatosi: %s — raw[:200]: %s", exc, cleaned[:200])
+            raise ValueError("LLM valid JSON qaytarmadi") from exc
 
 
 class ClaudeClient(BaseLLMClient):
@@ -137,9 +137,10 @@ class GeminiClient(BaseLLMClient):
                 "maxOutputTokens": max_tokens,
             },
         }
-        url = f"{self._base}/models/{self._model}:generateContent?key={self._api_key}"
+        url = f"{self._base}/models/{self._model}:generateContent"
+        headers = {"x-goog-api-key": self._api_key}
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(url, json=payload)
+            response = await client.post(url, json=payload, headers=headers)
             response.raise_for_status()
             data = response.json()
         return data["candidates"][0]["content"]["parts"][0]["text"]
